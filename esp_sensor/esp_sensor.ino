@@ -46,6 +46,8 @@ const char *ver                = "1.08"              ;
 const char *lux                = "Lux"               ;        
 const char *lightType          = "LightType"         ;              
 const char *lightType2         = "LightType2"        ;               
+const char *lightState         = "LightState"        ;              
+const char *lightState2        = "LightState2"       ;               
 const char *temperature        = "Temp"              ;         
 const char *humidity           = "Humidity"          ;             
 const char *pressure           = "Pressure"          ;             
@@ -72,8 +74,12 @@ String macString =         "none";
 String uptimeString =      "none";
 String ntpTimeString =     "none";
 String freeMemoryString =  "none";
-String lightState =        "AUTO";
-String lightState2 =       "AUTO";
+
+int lightTypeVal   =       2;
+int light2TypeVal  =       2;
+
+int lightStateVal  =       0;
+int lightState2Val =       0;
 
 BH1750 lightSensor;
 PubSubClient mqttClient;
@@ -92,6 +98,7 @@ unsigned long rebootTimer = 6000;
 unsigned long subscribeTimer = (atoi(JConf.subscribe_delay) *1000UL) - 5000UL;
 unsigned long lightOffTimer = 0;
 unsigned long lightOffTimer2 = 0;
+unsigned long mqttReconnectTimer = 0;
 
 bool motionDetect = false;
 
@@ -159,11 +166,6 @@ String ClassInfo;       ClassInfo += FPSTR(ClassInfoP);
 String ClassDanger;     ClassDanger += FPSTR(ClassDangerP);
 String ClassDefault;    ClassDefault += FPSTR(ClassDefaultP);
 String ClassSuccess;    ClassSuccess += FPSTR(ClassSuccessP);
-
-String AUTO;       AUTO += FPSTR(AUTOP);
-String ON;         ON += FPSTR(ONP);
-String OFF;        OFF += FPSTR(OFFP);
-
 
 */
 
@@ -430,9 +432,6 @@ const char ClassDangerP[] PROGMEM  = "danger";
 const char ClassDefaultP[] PROGMEM  = "default";
 const char ClassSuccessP[] PROGMEM  = "success";
 
-const char AUTOP[] PROGMEM  = "AUTO";
-const char ONP[] PROGMEM  = "ON";
-const char OFFP[] PROGMEM  = "OFF";
  
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////         ROOT 
 
@@ -658,42 +657,209 @@ void FadeSwitchLoop(){
 
 
 
-void LightControl() {
+bool MqttSubscribePrint(char *sub_buff)
+{
+  #ifdef DEBUG
+    unsigned long start_time = millis();
+    Serial.println(F("MqttSubscribePrint() Start"));
+  #endif
+
+  delay(10);
+  if (!mqttClient.connected()){
+    #ifdef DEBUG
+      Serial.print(F("MQTT server not connected"));  Serial.println();
+    #endif
+    return false;
+  }
+
+  if (mqttClient.subscribe(sub_buff)) {
+    #ifdef DEBUG
+      Serial.print(F("subscribe: "));  Serial.println(sub_buff);
+    #endif
+  } else {
+    #ifdef DEBUG
+      Serial.print(F("ERROR subscribe: "));  Serial.println(sub_buff);
+    #endif
+  }
+
+  #ifdef DEBUG
+    unsigned long load_time = millis() - start_time;
+    Serial.print(F("MqttSubscribePrint() Load Time: ")); Serial.println(load_time);
+  #endif
+
+  return true;
+}
+
+
+
+bool MqttSubscribe(){
+
+  #ifdef DEBUG
+    unsigned long start_time = millis();
+    Serial.println(F("MqttSubscribe() Start"));
+  #endif
+
+  if (!mqttClient.connected()){
+    #ifdef DEBUG
+      Serial.print(F("MQTT server not connected"));  Serial.println();
+    #endif
+    return false;
+  }
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, motionsensortimer, JConf.mqtt_name);
+  MqttSubscribePrint(topic_buff);
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType, JConf.mqtt_name);
+  MqttSubscribePrint(topic_buff);
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType2, JConf.mqtt_name);
+  MqttSubscribePrint(topic_buff);
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.subscribe_topic, uptime, JConf.mqtt_name);
+  MqttSubscribePrint(topic_buff);
+
+  #ifdef DEBUG
+    unsigned long load_time = millis() - start_time;
+    Serial.print(F("MqttSubscribe() Load Time: ")); Serial.println(load_time);
+  #endif
+
+  return true;
+}
+
+
+
+void MqttReconnect(){
+
+  if (!mqttClient.connected() && (millis() - mqttReconnectTimer) > 5000) {
+
+    mqttClient.disconnect();
+
+    mqttReconnectTimer = millis();
+    Serial.println(F("Attempting MQTT connection..."));
+
+    if (JConf.mqtt_user[0] != '\0' && JConf.mqtt_pwd[0] != '\0'  &&  mqttClient.connect(JConf.mqtt_name, JConf.mqtt_user, JConf.mqtt_pwd)){
+      #ifdef DEBUG
+        Serial.println(F("mqttClient.connect Auth Enable"));
+      #endif
+      MqttSubscribe();
+    } else if (mqttClient.connect(JConf.mqtt_name)) {
+      #ifdef DEBUG
+        Serial.println(F("mqttClient.connect Auth Disable"));
+      #endif
+      MqttSubscribe();
+    } else {
+      Serial.print(F("failed, rc="));
+      Serial.print(mqttClient.state());
+      Serial.println(F(" try again"));
+    }
+  }
+}
+
+
+
+bool MqttPubLightState(bool pubType = false){
+
+  #ifdef DEBUG
+    unsigned long start_time = millis();
+    Serial.println(F("MqttPubLightState() Start"));
+  #endif
+
+  if (!mqttClient.connected()){
+    #ifdef DEBUG
+      Serial.print(F("MQTT server not connected"));  Serial.println();
+      unsigned long load_time = millis() - start_time;
+      Serial.print(F("MqttPubLightState() Load Time: ")); Serial.println(load_time);
+    #endif
+    return false;
+  }
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_sub_topic,  lightState, JConf.mqtt_name);
+  sprintf_P(value_buff, (const char *)F("%d"), lightStateVal);
+  mqttClient.publish(topic_buff, value_buff);
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_sub_topic,  lightState2, JConf.mqtt_name);
+  sprintf_P(value_buff, (const char *)F("%d"), lightState2Val);
+  mqttClient.publish(topic_buff, value_buff);
+
+  if (pubType){
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_sub_topic,  lightType, JConf.mqtt_name);
+    sprintf_P(value_buff, (const char *)F("%d"), lightTypeVal);
+    mqttClient.publish(topic_buff, value_buff);
+
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_sub_topic,  lightType2, JConf.mqtt_name);
+    sprintf_P(value_buff, (const char *)F("%d"), light2TypeVal);
+    mqttClient.publish(topic_buff, value_buff);
+  }
+
+  #ifdef DEBUG
+    unsigned long load_time = millis() - start_time;
+    Serial.print(F("MqttPubLightState() Load Time: ")); Serial.println(load_time);
+  #endif
+
+  return true;
+}
+
+
+
+void LightControl(bool pubType = true) {
 
   #ifdef DEBUG11
     unsigned long start_time = millis();
     Serial.println(F("LightControl() Start"));
   #endif
 
-  String AUTO;       AUTO += FPSTR(AUTOP);
-  String ON;         ON += FPSTR(ONP);
-  String OFF;        OFF += FPSTR(OFFP);
 
-  if (lightState == ON && luxString.toInt() < atoi(JConf.lighton_lux)){
+  int last_lightStateVal = lightStateVal;
+  int last_lightState2Val = lightState2Val;
+
+
+  if (lightTypeVal == ON && luxString.toInt() < atoi(JConf.lighton_lux)){
     PWMChange(atoi(JConf.light_pin), 1023);
-  } else if (lightState == OFF){
-    PWMChange(atoi(JConf.light_pin), 0);
-  } else if (lightState == AUTO && motionDetect == true && luxString.toInt() < atoi(JConf.lighton_lux)){
+    lightStateVal = ON;
+    lightOffTimer = OFF;
+  } else if (lightTypeVal == OFF){
+    PWMChange(atoi(JConf.light_pin), OFF);
+    lightStateVal = OFF;
+    lightOffTimer = OFF;
+  } else if (lightTypeVal == AUTO && motionDetect == true && luxString.toInt() < atoi(JConf.lighton_lux)){
     PWMChange(atoi(JConf.light_pin), 1023);
+    lightStateVal = ON;
     lightOffTimer = millis();
-  } else if (lightState == AUTO && motionDetect == false && cycleEnd[atoi(JConf.light_pin)] != 0){
+  } else if (lightTypeVal == AUTO && motionDetect == false && cycleEnd[atoi(JConf.light_pin)] != 0){
     if (millis() - lightOffTimer >= atoi(JConf.lightoff_delay) * 60UL * 1000UL){
-      PWMChange(atoi(JConf.light_pin), 0);
+      PWMChange(atoi(JConf.light_pin), OFF);
+     lightStateVal = OFF;
     }
   }
 
-  if (lightState2 == ON && luxString.toInt() < atoi(JConf.light2on_lux)){
+  if (light2TypeVal == ON && luxString.toInt() < atoi(JConf.light2on_lux)){
     PWMChange(atoi(JConf.light2_pin), 1023);
-  } else if (lightState2 == OFF){
-    PWMChange(atoi(JConf.light2_pin), 0);
-  } else if (lightState2 == AUTO && motionDetect == true && luxString.toInt() < atoi(JConf.light2on_lux)){
+    lightState2Val = ON;
+    lightOffTimer2 = OFF;
+  } else if (light2TypeVal == OFF){
+    PWMChange(atoi(JConf.light2_pin), OFF);
+    lightState2Val = OFF;
+    lightOffTimer2 = OFF;
+  } else if (light2TypeVal == AUTO && motionDetect == true && luxString.toInt() < atoi(JConf.light2on_lux)){
     PWMChange(atoi(JConf.light2_pin), 1023);
+    lightState2Val = ON;
     lightOffTimer2 = millis();
-  } else if (lightState2 == AUTO && motionDetect == false && cycleEnd[atoi(JConf.light2_pin)] != 0){
+  } else if (light2TypeVal == AUTO && motionDetect == false && cycleEnd[atoi(JConf.light2_pin)] != 0){
     if (millis() - lightOffTimer2 >= atoi(JConf.light2off_delay) * 60UL * 1000UL){
-      PWMChange(atoi(JConf.light2_pin), 0);
+      PWMChange(atoi(JConf.light2_pin), OFF);
+      lightState2Val = OFF;
     }
   }
+
+
+  if (last_lightStateVal != lightStateVal || last_lightState2Val != lightState2Val && atoi(JConf.mqtt_enable) == ON){
+    if (pubType){
+      MqttPubLightState(pubType = true);
+    } else {
+      MqttPubLightState();
+    }
+  }
+
 
   #ifdef DEBUG11
     unsigned long load_time = millis() - start_time;
@@ -908,7 +1074,7 @@ bool WiFiSetup()
   }
 
   //DHCP or Static IP ?
-  if (atoi(JConf.static_ip_enable) == 1) {
+  if (atoi(JConf.static_ip_enable) == ON) {
 
       IPAddress staticIP = stringToIp(JConf.static_ip);
       IPAddress staticGateway = stringToIp(JConf.static_gateway);
@@ -1069,6 +1235,22 @@ void DHT22Sensor()
 
 
 
+void MqttPubMotionState (bool state){
+
+  if (atoi(JConf.mqtt_enable) == ON && mqttClient.connected()) {
+
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  motionSensor, JConf.mqtt_name);
+
+    if (state) {
+      mqttClient.publish(topic_buff, "1");
+    } else {
+      mqttClient.publish(topic_buff, "0");
+    }
+  }  
+}
+
+
+
 void MotionDetect(){
 
   #ifdef DEBUG11
@@ -1082,12 +1264,7 @@ void MotionDetect(){
     #endif
     motionDetect = true;
     LightControl();
-    if (atoi(JConf.mqtt_enable) == 1) {
-      if (mqttClient.connected()) {
-        sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  motionSensor, JConf.mqtt_name);
-        mqttClient.publish(topic_buff, "ON");
-      }
-    }
+    MqttPubMotionState(motionDetect);
   }
 
   #ifdef DEBUG11
@@ -1162,6 +1339,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     Serial.println(F("callback() Start"));
   #endif
 
+  mqttReconnectTimer = millis();
   subscribeTimer = millis();
   rebootTimer = millis();
 
@@ -1180,27 +1358,45 @@ void callback(char* topic, byte* payload, unsigned int length) {
   sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType, JConf.mqtt_name);
   if (strcmp (topic,topic_buff) == 0){
 
-    String AUTO;       AUTO += FPSTR(AUTOP);
-    String ON;         ON += FPSTR(ONP);
-    String OFF;        OFF += FPSTR(OFFP);
-
-    #ifdef DEBUG
-      Serial.print(F("topic: "));  Serial.print(topic);  Serial.print(F(" equals "));  Serial.println(topic_buff);
-    #endif
     if (strncmp (value_buff,"1",1) == 0){
-      lightState = ON;
+      lightTypeVal = ON;
     } else if (strncmp (value_buff,"0",1) == 0){
-      lightState = OFF;
+      lightTypeVal = OFF;
     } else if (strncmp (value_buff,"2",1) == 0){
-      lightState = AUTO;
+      lightTypeVal = AUTO;
     }
 
     #ifdef DEBUG
-      Serial.print(F("value_buff: "));  Serial.print(value_buff);  Serial.print(F(" contains "));   Serial.print(lightState);
+      Serial.print(F("topic: "));  Serial.print(topic);  Serial.print(F(" equals "));  Serial.println(topic_buff);
+      Serial.print(F("value_buff: "));  Serial.print(value_buff);  Serial.print(F(" contains "));   Serial.print(lightTypeVal);
     #endif
 
-    LightControl();
+    bool pubType = false;
+    LightControl(pubType);
   }
+
+
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType2, JConf.mqtt_name);
+  if (strcmp (topic,topic_buff) == 0){
+
+    if (strncmp (value_buff,"1",1) == 0){
+      light2TypeVal = ON;
+    } else if (strncmp (value_buff,"0",1) == 0){
+      light2TypeVal = OFF;
+    } else if (strncmp (value_buff,"2",1) == 0){
+      light2TypeVal = AUTO;
+    }
+
+    #ifdef DEBUG
+      Serial.print(F("topic: "));  Serial.print(topic);  Serial.print(F(" equals "));  Serial.println(topic_buff);
+      Serial.print(F("value_buff: "));  Serial.print(value_buff);  Serial.print(F(" contains "));   Serial.print(light2TypeVal);
+    #endif
+
+    bool pubType = false;
+    LightControl(pubType);
+  }
+
+
 
 
   sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, motionsensortimer, JConf.mqtt_name);
@@ -1235,56 +1431,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 
 
-bool MqttPubLightState(){
-
-  #ifdef DEBUG
-    unsigned long start_time = millis();
-    Serial.println(F("MqttPubLightState() Start"));
-  #endif
-
-  if (!mqttClient.connected()){
-    #ifdef DEBUG
-      Serial.print(F("MQTT server not connected"));  Serial.println();
-      unsigned long load_time = millis() - start_time;
-      Serial.print(F("MqttPubLightState() Load Time: ")); Serial.println(load_time);
-    #endif
-    return false;
-  }
-
-  String ON;         ON += FPSTR(ONP);
-  String OFF;        OFF += FPSTR(OFFP);
-
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  lightType, JConf.mqtt_name);
-  String lightStateNum;
-  if (lightState == ON){
-    lightStateNum = String(F("1"));
-  } else if (lightState == OFF){
-    lightStateNum = String(F("0"));
-  } else {
-    lightStateNum = String(F("2"));
-  }
-  mqttClient.publish(topic_buff, lightStateNum.c_str());
-
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  lightType2, JConf.mqtt_name);
-  if (lightState2 == ON){
-    lightStateNum = String(F("1"));
-  } else if (lightState2 == OFF){
-    lightStateNum = String(F("0"));
-  } else {
-    lightStateNum = String(F("2"));
-  }
-  mqttClient.publish(topic_buff, lightStateNum.c_str());
-
-  #ifdef DEBUG
-    unsigned long load_time = millis() - start_time;
-    Serial.print(F("MqttPubLightState() Load Time: ")); Serial.println(load_time);
-  #endif
-
-  return true;
-}
-
-
-
 bool MqttPubLightOffDelay() {
 
   #ifdef DEBUG
@@ -1299,7 +1445,6 @@ bool MqttPubLightOffDelay() {
       unsigned long load_time = millis() - start_time;
       Serial.print(F("MqttPubLightOffDelay() Load Time: ")); Serial.println(load_time);
     #endif
-
     return false;
   }
 
@@ -1326,7 +1471,7 @@ bool MqttPubData() {
     Serial.println(F("MqttPubData() Start"));
   #endif
 
-  if (mqttClient.state() != 0){
+  if (!mqttClient.connected()){
     #ifdef DEBUG
       Serial.print(F("MQTT server not connected"));  Serial.println();
       unsigned long load_time = millis() - start_time;
@@ -1337,17 +1482,25 @@ bool MqttPubData() {
 
   Serial.print(F("MQTT data send"));  Serial.println();
 
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  lux, JConf.mqtt_name);
-  mqttClient.publish(topic_buff, luxString.c_str());
+  if (atoi(JConf.bh1750_enable) == ON) {
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  lux, JConf.mqtt_name);
+    mqttClient.publish(topic_buff, luxString.c_str());
+  }
 
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic, temperature, JConf.mqtt_name);
-  mqttClient.publish(topic_buff, temperatureString.c_str());
+  if (atoi(JConf.bme280_enable) == ON || atoi(JConf.sht21_enable) == ON) {
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic, temperature, JConf.mqtt_name);
+    mqttClient.publish(topic_buff, temperatureString.c_str());
+  }
 
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic, pressure, JConf.mqtt_name);
-  mqttClient.publish(topic_buff, pressureString.c_str());
+  if (atoi(JConf.bme280_enable) == ON) {
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic, pressure, JConf.mqtt_name);
+    mqttClient.publish(topic_buff, pressureString.c_str());
+  }
 
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  humidity, JConf.mqtt_name);
-  mqttClient.publish(topic_buff, humidityString.c_str());
+  if (atoi(JConf.bme280_enable) == ON || atoi(JConf.sht21_enable) == ON) {
+    sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  humidity, JConf.mqtt_name);
+    mqttClient.publish(topic_buff, humidityString.c_str());
+  }
 
   sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  freeMemory, JConf.mqtt_name);
   mqttClient.publish(topic_buff, freeMemoryString.c_str());
@@ -1364,7 +1517,7 @@ bool MqttPubData() {
   sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  mac, JConf.mqtt_name);
   mqttClient.publish(topic_buff, macString.c_str());
 
- 
+
   #ifdef DHT_ON
     sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic,  errorsDHT, JConf.mqtt_name);
     sprintf_P(value_buff, (const char *)F("%d"), errorDHTdata);  
@@ -1374,82 +1527,6 @@ bool MqttPubData() {
   #ifdef DEBUG
     unsigned long load_time = millis() - start_time;
     Serial.print(F("MqttPubData() Load Time: ")); Serial.println(load_time);
-  #endif
-
-  return true;
-}
-
-
-
-bool MqttSubscribePrint(char *sub_buff)
-{
-  #ifdef DEBUG
-    unsigned long start_time = millis();
-    Serial.println(F("MqttSubscribePrint() Start"));
-  #endif
-
-  delay(50);
-  if (!mqttClient.connected()){
-    #ifdef DEBUG
-      Serial.print(F("MQTT server not connected"));  Serial.println();
-    #endif
-    return false;
-  }
-
-  if (mqttClient.subscribe(sub_buff)) {
-    #ifdef DEBUG
-      Serial.print(F("subscribe: "));  Serial.println(sub_buff);
-    #endif
-  } else {
-    #ifdef DEBUG
-      mqttClient.disconnect();
-      Serial.print(F("ERROR subscribe: "));  Serial.println(sub_buff);
-    #endif
-  }
-
-  #ifdef DEBUG
-    unsigned long load_time = millis() - start_time;
-    Serial.print(F("MqttSubscribePrint() Load Time: ")); Serial.println(load_time);
-  #endif
-
-  return true;
-}
-
-
-
-bool MqttSubscribe(){
-
-  #ifdef DEBUG
-    unsigned long start_time = millis();
-    Serial.println(F("MqttSubscribe() Start"));
-  #endif
-
-  if (!mqttClient.connected()){
-    #ifdef DEBUG
-      Serial.print(F("MQTT server not connected"));  Serial.println();
-    #endif
-    return false;
-  }
-
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, motionsensortimer, JConf.mqtt_name);
-  MqttSubscribePrint(topic_buff);
-
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType, JConf.mqtt_name);
-  MqttSubscribePrint(topic_buff);
-
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType2, JConf.mqtt_name);
-  MqttSubscribePrint(topic_buff);
-
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.subscribe_topic, uptime, JConf.mqtt_name);
-  MqttSubscribePrint(topic_buff);
-/*
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.subscribe_topic, version, JConf.mqtt_name);
-  MqttSubscribePrint(topic_buff);
-*/
-
-  #ifdef DEBUG
-    unsigned long load_time = millis() - start_time;
-    Serial.print(F("MqttSubscribe() Load Time: ")); Serial.println(load_time);
   #endif
 
   return true;
@@ -1516,7 +1593,7 @@ void TestSystemPrint()
 
   Serial.println(F("----------------"));
 
-  if (atoi(JConf.mqtt_enable) == 1){
+  if (atoi(JConf.mqtt_enable) == ON){
     TestMQTTPrint();
   }
 
@@ -1601,18 +1678,18 @@ void WebRoot(void) {
 
   String title1       = panelHeaderName + String(F("Sensor Data"))   + panelHeaderEnd;
 
-  if (atoi(JConf.bme280_enable) == 1 || atoi(JConf.sht21_enable) == 1){
+  if (atoi(JConf.bme280_enable) == ON || atoi(JConf.sht21_enable) == ON){
     title1           += panelBodySymbol + String(F("fire"))          + panelBodyName + String(F("Temperature")) + panelBodyValue + String(F(" id='temperatureId'")) + closingAngleBracket   + panelBodyEnd;
     title1           += panelBodySymbol + String(F("tint"))          + panelBodyName + String(F("Humidity"))    + panelBodyValue + String(F(" id='humidityId'")) + closingAngleBracket      + panelBodyEnd;
   }
 
   #ifdef BME280_ON
-    if (atoi(JConf.bme280_enable) == 1){
+    if (atoi(JConf.bme280_enable) == ON){
       title1         += panelBodySymbol + String(F("cloud"))         + panelBodyName + String(F("Pressure"))    + panelBodyValue + String(F(" id='pressureId'")) + closingAngleBracket      + panelBodyEnd;
     }
   #endif
 
-  if (atoi(JConf.bh1750_enable) == 1){
+  if (atoi(JConf.bh1750_enable) == ON){
     title1           += panelBodySymbol + String(F("asterisk"))      + panelBodyName + String(F("illuminance")) + panelBodyValue + String(F(" id='illuminanceId'")) + closingAngleBracket   + panelBodyEnd;
   }
   
@@ -1624,7 +1701,7 @@ void WebRoot(void) {
 
   title2             += panelBodySymbol + String(F("time"))          + panelBodyName + String(F("Uptime"))      + panelBodyValue + String(F(" id='uptimeId'"))     + closingAngleBracket  + panelBodyEnd;
 
-  if (atoi(JConf.ntp_enable) == 1) {
+  if (atoi(JConf.ntp_enable) == ON) {
     title2           += panelBodySymbol + String(F("time"))          + panelBodyName + String(F("NTP time"))    + panelBodyValue + String(F(" id='ntpTimeId'"))    + closingAngleBracket  + panelBodyEnd;
   }
 
@@ -1634,16 +1711,16 @@ void WebRoot(void) {
 
   String data = headerStart + JConf.module_id + headerStart2 + headerEnd + javaScript;
 
-  if (atoi(JConf.bme280_enable) == 1 || atoi(JConf.sht21_enable) == 1) {
+  if (atoi(JConf.bme280_enable) == ON || atoi(JConf.sht21_enable) == ON) {
     data += jsTemperature + jsHumidity;
   }
-  if (atoi(JConf.bme280_enable) == 1) {
+  if (atoi(JConf.bme280_enable) == ON) {
     data += jsPressure;
   }
-  if (atoi(JConf.bh1750_enable) == 1) {
+  if (atoi(JConf.bh1750_enable) == ON) {
     data += jsIlluminance;
   }
-  if (atoi(JConf.ntp_enable) == 1) {
+  if (atoi(JConf.ntp_enable) == ON) {
     data += jsNtp;
   }
   data += javaScriptEnd + bodyAjax + navbarStart + JConf.module_id + navbarStart2 +navbarActive + navbarEnd + containerStart + title1 + panelEnd + title2 + panelEnd +  containerEnd + siteEnd;
@@ -1990,7 +2067,7 @@ void WebWiFiConf(void) {
     data += inputBodyName + String(F("STA SSID")) + inputBodyPOST + String(F("sta_ssid"))  + inputPlaceHolder + JConf.sta_ssid + inputBodyClose + inputBodyCloseDiv;
     data += inputBodyName + String(F("STA Password")) + String(F("</span><input type='password' name='")) + String(F("sta_pwd")) + inputPlaceHolder + String(F("********")) + inputBodyClose + inputBodyCloseDiv;
 
-    if (atoi(JConf.static_ip_enable) == 1){
+    if (atoi(JConf.static_ip_enable) == ON){
       data += String(F("<div class='checkbox'><label><input type='checkbox' name='static_ip_enable' value='1' checked='true'>Static IP Mode</label></div>"));
       data += inputBodyName + String(F("Static IP"))      + inputBodyPOST + String(F("static_ip"))      + inputPlaceHolder + JConf.static_ip      + inputBodyClose + inputBodyCloseDiv;
       data += inputBodyName + String(F("Static Gateway")) + inputBodyPOST + String(F("static_gateway")) + inputPlaceHolder + JConf.static_gateway + inputBodyClose + inputBodyCloseDiv;
@@ -2117,25 +2194,25 @@ void WebSensorsConf(void) {
     JConf.saveConfig();
   }
 
-  if (atoi(JConf.bme280_enable) == 1){
+  if (atoi(JConf.bme280_enable) == ON){
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='bme280_enable' value='1' checked='true'>BME280 Enable</label></div>"));
   } else {
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='bme280_enable' value='1'>BME280 Enable</label></div>"));
   }
 
-  if (atoi(JConf.sht21_enable) == 1){
+  if (atoi(JConf.sht21_enable) == ON){
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='sht21_enable' value='1' checked='true'>SHT21 Enable</label></div>"));
   } else {
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='sht21_enable' value='1'>SHT21 Enable</label></div>"));
   }
 
-  if (atoi(JConf.bh1750_enable) == 1){
+  if (atoi(JConf.bh1750_enable) == ON){
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='bh1750_enable' value='1' checked='true'>BH1750 Enable</label></div>"));
   } else {
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='bh1750_enable' value='1'>BH1750 Enable</label></div>"));
   }
 
-  if (atoi(JConf.motion_sensor_enable) == 1){
+  if (atoi(JConf.motion_sensor_enable) == ON){
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='motion_sensor_enable' value='1' checked='true'>Motion Sensor Enable</label></div>"));
   } else {
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='motion_sensor_enable' value='1'>Motion Sensor Enable</label></div>"));
@@ -2210,7 +2287,7 @@ void WebEspConf(void) {
   payload=WebServer.arg("lightoff_delay");
   if (payload.length() > 0 ) {
     payload.toCharArray(JConf.lightoff_delay, sizeof(JConf.lightoff_delay));
-    if (atoi(JConf.mqtt_enable) == 1){
+    if (atoi(JConf.mqtt_enable) == ON){
       MqttPubLightOffDelay();
     }
     config_changed = true;
@@ -2238,7 +2315,7 @@ void WebEspConf(void) {
   payload=WebServer.arg("light2off_delay");
   if (payload.length() > 0 ) {
     payload.toCharArray(JConf.light2off_delay, sizeof(JConf.light2off_delay));
-    if (atoi(JConf.mqtt_enable) == 1){
+    if (atoi(JConf.mqtt_enable) == ON){
       MqttPubLightOffDelay();
     }
     config_changed = true;
@@ -2310,7 +2387,7 @@ void WebEspConf(void) {
   data += inputBodyName + String(F("Off Delay")) + inputBodyPOST + String(F("lightoff_delay")) + inputPlaceHolder + JConf.lightoff_delay + inputBodyClose + inputBodyUnitStart + String(F("min")) + inputBodyUnitEnd + inputBodyCloseDiv;
   data += inputBodyName + String(F("On Lux")) + inputBodyPOST + String(F("lighton_lux")) + inputPlaceHolder + JConf.lighton_lux + inputBodyClose + inputBodyUnitStart + String(F("Lux")) + inputBodyUnitEnd + inputBodyCloseDiv;
 
-  if (atoi(JConf.light_smooth) == 1){
+  if (atoi(JConf.light_smooth) == ON){
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='light_smooth' value='1' checked='true'>Smooth Enable</label></div>"));
   } else {
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='light_smooth' value='1'>Smooth Enable</label></div>"));
@@ -2322,7 +2399,7 @@ void WebEspConf(void) {
   data += inputBodyName + String(F("Off Delay")) + inputBodyPOST + String(F("light2off_delay")) + inputPlaceHolder + JConf.light2off_delay + inputBodyClose + inputBodyUnitStart + String(F("min")) + inputBodyUnitEnd + inputBodyCloseDiv;
   data += inputBodyName + String(F("On Lux")) + inputBodyPOST + String(F("light2on_lux")) + inputPlaceHolder + JConf.light2on_lux + inputBodyClose + inputBodyUnitStart + String(F("Lux")) + inputBodyUnitEnd + inputBodyCloseDiv;
 
-  if (atoi(JConf.light2_smooth) == 1){
+  if (atoi(JConf.light2_smooth) == ON){
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='light2_smooth' value='1' checked='true'>Smooth Enable</label></div>"));
   } else {
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='light2_smooth' value='1'>Smooth Enable</label></div>"));
@@ -2482,7 +2559,7 @@ void WebMqttConf(void) {
   }
 
 
-  if (atoi(JConf.mqtt_enable) == 1){
+  if (atoi(JConf.mqtt_enable) == ON){
 
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='mqtt_enable' value='1' checked='true'>MQTT Enable</label></div>"));
     data += inputBodyName + String(F("Server MQTT")) + inputBodyPOST + String(F("mqtt_server")) + inputPlaceHolder + JConf.mqtt_server + inputBodyClose + inputBodyCloseDiv;
@@ -2595,7 +2672,7 @@ void WebNTPConf(void) {
     JConf.saveConfig();
   }
 
-  if (atoi(JConf.ntp_enable) == 1){
+  if (atoi(JConf.ntp_enable) == ON){
     //data += String(F("<div><input type='hidden' name='ntp_enable' value='0'></div>"));
     data += String(F("<div class='checkbox'><label><input type='checkbox' name='ntp_enable' value='1' checked='true'>NTP Enable</label></div>"));
 
@@ -2628,45 +2705,38 @@ void handleControl(){
     Serial.println(F("handleControl() Start"));
   #endif
 
-  String AUTO;       AUTO += FPSTR(AUTOP);
-  String ON;         ON += FPSTR(ONP);
-  String OFF;        OFF += FPSTR(OFFP);
-
-  String last_light_state = lightState;
-  String last_light_state2 = lightState2;
+  int last_light_state = lightTypeVal;
+  int last_light_state2 = light2TypeVal;
 
   if (WebServer.args() > 0 ) {
     for ( size_t i = 0; i < WebServer.args(); i++ ) {
       if (WebServer.argName(i) == "1" && WebServer.arg(i) == "1") {
         if (cycleEnd[atoi(JConf.light_pin)] != 0){
-          lightState = OFF;
+          lightTypeVal = OFF;
         } else {
-          lightState = ON;
+          lightTypeVal = ON;
         }
       }
       if (WebServer.argName(i) == "1" && WebServer.arg(i) == "2") {
-        lightState = AUTO;
+        lightTypeVal = AUTO;
       }
 
       if (WebServer.argName(i) == "2" && WebServer.arg(i) == "1") {
         if (cycleEnd[atoi(JConf.light2_pin)] != 0){
-          lightState2 = OFF;
+          light2TypeVal = OFF;
         } else {
-          lightState2 = ON;
+          light2TypeVal = ON;
         }
       }
       if (WebServer.argName(i) == "2" && WebServer.arg(i) == "2") {
-        lightState2 = AUTO;
+        light2TypeVal = AUTO;
       }
       #ifdef DEBUG
       Serial.println(WebServer.argName(i));
       Serial.println(WebServer.arg(i));
       #endif
-      if (last_light_state != lightState || last_light_state2 != lightState2){
+      if (last_light_state != lightTypeVal || last_light_state2 != light2TypeVal){
         LightControl();
-        if (atoi(JConf.mqtt_enable) == 1) {
-          MqttPubLightState();
-        }
       }
     }
   }
@@ -2736,11 +2806,6 @@ void WebPinControlStatus(void) {
   String ClassDanger;     ClassDanger += FPSTR(ClassDangerP);
   String ClassDefault;    ClassDefault += FPSTR(ClassDefaultP);
   String ClassSuccess;    ClassSuccess += FPSTR(ClassSuccessP);
-  String AUTO;            AUTO += FPSTR(AUTOP);
-  String ON;              ON += FPSTR(ONP);
-  String OFF;             OFF += FPSTR(OFFP);
-
-
 
 
   if (cycleEnd[atoi(JConf.light_pin)] != 0){
@@ -2758,32 +2823,41 @@ void WebPinControlStatus(void) {
 
 
   String mode;
-  if (lightState == AUTO){
+  String modeStr;
+
+  if (lightTypeVal == AUTO){
     mode = ClassSuccess;
-  } else if (lightState == ON) {
+    modeStr = "AUTO";
+  } else if (lightTypeVal == ON) {
     mode = ClassInfo;
+    modeStr = "ON";
   } else {
     mode = ClassDanger;
+    modeStr = "OFF";
   }
 
   String mode2;
-  if (lightState2 == AUTO){
+  String modeStr2;
+  if (light2TypeVal == AUTO){
     mode2 = ClassSuccess;
-  } else if (lightState2 == ON) {
+    modeStr2 = "AUTO";
+  } else if (light2TypeVal == ON) {
     mode2 = ClassInfo;
+    modeStr2 = "ON";
   } else {
     mode2 = ClassDanger;
+    modeStr2 = "OFF";
   }
 
 
   unsigned long timeOff = 0;
-  if (millis() - lightOffTimer < atoi(JConf.lightoff_delay) * 60 * 1000){
+  if (millis() - lightOffTimer < atoi(JConf.lightoff_delay) * 60 * 1000  && lightStateVal == ON){
     timeOff = atoi(JConf.lightoff_delay) * 60 * 1000 - (millis() - lightOffTimer);
     timeOff = timeOff/1000;
   }
 
   unsigned long timeOff2 = 0;
-  if (millis() - lightOffTimer2 < atoi(JConf.light2off_delay) * 60 * 1000){
+  if (millis() - lightOffTimer2 < atoi(JConf.light2off_delay) * 60 * 1000 && lightState2Val == ON){
     timeOff2 = atoi(JConf.light2off_delay) * 60 * 1000 - (millis() - lightOffTimer2);
     timeOff2 = timeOff2/1000;
   }
@@ -2791,19 +2865,19 @@ void WebPinControlStatus(void) {
   String data;    data += FPSTR(div1P);
   
 
-  if (lightState == AUTO) { data+=ClassDefault; } else if (pinState) { data+=ClassDanger; } else { data+=ClassInfo; }
+  if (lightTypeVal == AUTO) { data+=ClassDefault; } else if (pinState) { data+=ClassDanger; } else { data+=ClassInfo; }
   data+=String(F("' value='"));
   if (pinState) { data+=String(F("Turn Off")); } else { data+=String(F("Turn On")); }
   data+=String(F("'></div></td><td class='active'><div onclick='Auto1();'><input id='Auto' type='submit' class='btn btn-"));
-  if (lightState == AUTO) { data+=ClassDanger; } else { data+=ClassDefault; }
+  if (lightTypeVal == AUTO) { data+=ClassDanger; } else { data+=ClassDefault; }
   data+=String(F("' value='Auto'></div></td><td class='"));
   if (pinState) { data+=ClassInfo; } else { data+=ClassDanger; }
   data+=String(F("'><h4>"));
-  if (pinState) { data+=ON; } else { data+=OFF; }
+  if (pinState) { data+="ON"; } else { data+="OFF"; }
   data+=String(F("</h4></td><td class='"));
   data+=mode;    
   data+=String(F("'><h4>"));
-  data+=lightState;
+  data+=modeStr;
   data+=String(F("</h4></td><td class='"));
   data+=String(F("active"));
   data+=String(F("'><h4>"));
@@ -2812,19 +2886,19 @@ void WebPinControlStatus(void) {
 
 
   data+=String(F("<tr><td class='active'><h4>Light2</h4></td><td class='active'><div onclick='Pin2();'><input id='OnOff2' type='submit' class='btn btn-"));
-  if (lightState2 == AUTO) { data+=ClassDefault; } else if (pinState2) { data+=ClassDanger; } else { data+=ClassInfo; }
+  if (light2TypeVal == AUTO) { data+=ClassDefault; } else if (pinState2) { data+=ClassDanger; } else { data+=ClassInfo; }
   data+=String(F("' value='"));
   if (pinState2) { data+=String(F("Turn Off")); } else { data+=String(F("Turn On")); }
   data+=String(F("'></div></td><td class='active'><div onclick='Auto2();'><input id='Auto2' type='submit' class='btn btn-"));
-  if (lightState2 == AUTO) { data+=ClassDanger; } else { data+=ClassDefault; }
+  if (light2TypeVal == AUTO) { data+=ClassDanger; } else { data+=ClassDefault; }
   data+=String(F("' value='Auto'></div></td><td class='"));
   if (pinState2) { data+=ClassInfo; } else { data+=ClassDanger; }
   data+=String(F("'><h4>"));
-  if (pinState2) { data+=ON; } else { data+=OFF; }
+  if (pinState2) { data+="ON"; } else { data+="OFF"; }
   data+=String(F("</h4></td><td class='"));
   data+=mode2;    
   data+=String(F("'><h4>"));
-  data+=lightState2;
+  data+=modeStr2;
   data+=String(F("</h4></td><td class='"));
   data+=String(F("active"));
   data+=String(F("'><h4>"));
@@ -3035,7 +3109,7 @@ void handleXML(){
   XML+=uptimeString;
   XML+=String(F("</uptime>"));
 
-  if (atoi(JConf.ntp_enable) == 1) {
+  if (atoi(JConf.ntp_enable) == ON) {
     XML+=String(F("<ntpTime>"));
     XML+=ntpTimeString;
     XML+=String(F("</ntpTime>"));
@@ -3172,7 +3246,7 @@ void setup() {
     dht.begin();
   #endif
 
-  if (atoi(JConf.bme280_enable) == 1) {
+  if (atoi(JConf.bme280_enable) == ON) {
     #ifdef BME280_ON
       bmeSensor.settings.commInterface = I2C_MODE;
       bmeSensor.settings.I2CAddress = 0x76;
@@ -3188,11 +3262,11 @@ void setup() {
 
   //Wire.begin(4,5); //SDA=4, SCL=5
 
-  if (atoi(JConf.bh1750_enable) == 1) {
+  if (atoi(JConf.bh1750_enable) == ON) {
     lightSensor.begin();
   }
 
-  if (atoi(JConf.bme280_enable) == 1 || atoi(JConf.bh1750_enable) == 1 || atoi(JConf.sht21_enable) == 1) {
+  if (atoi(JConf.bme280_enable) == ON || atoi(JConf.bh1750_enable) == ON || atoi(JConf.sht21_enable) == ON) {
     Wire.setClock(100000);
   }
 
@@ -3206,7 +3280,7 @@ void setup() {
   delay(1000);
 
 
-  if (atoi(JConf.mqtt_enable) == 1) {
+  if (atoi(JConf.mqtt_enable) == ON) {
     mqttClient.setClient(espClient);
 
     if (isIPValid(JConf.mqtt_server)){
@@ -3247,7 +3321,7 @@ void setup() {
 
 */
 
-  if (atoi(JConf.ntp_enable) == 1) {
+  if (atoi(JConf.ntp_enable) == ON) {
     timeClient.reconfigure(JConf.ntp_server, atoi(JConf.my_time_zone) * 60 * 60, 60000);
   }
 }
@@ -3273,7 +3347,7 @@ void loop() {
   if (millis() - getDataTimer >= atoi(JConf.get_data_delay) * 1000){
     getDataTimer = millis();
 
-    if (atoi(JConf.ntp_enable) == 1) {
+    if (atoi(JConf.ntp_enable) == ON) {
       timeClient.update();
       ntpTimeString = timeClient.getFormattedTime();
     }
@@ -3284,18 +3358,18 @@ void loop() {
       RebootESP();
     #endif
 
-    if (atoi(JConf.bh1750_enable) == 1){
+    if (atoi(JConf.bh1750_enable) == ON){
       GetLightSensorData();
     }
 
     #ifdef BME280_ON
-      if (atoi(JConf.bme280_enable) == 1){
+      if (atoi(JConf.bme280_enable) == ON){
         GetBmeSensorData();
       }
     #endif
 
     #ifdef SHT21_ON
-      if (atoi(JConf.sht21_enable) == 1){
+      if (atoi(JConf.sht21_enable) == ON){
         GetSHT21SensorData();
       }
     #endif
@@ -3341,20 +3415,21 @@ void loop() {
   #endif
 
 
-  if (atoi(JConf.motion_sensor_enable) == 1){
+  if (atoi(JConf.motion_sensor_enable) == ON){
     if (motionDetect == false){
       MotionDetect();
     }  
 
     if (millis() - motionTimer >= atoi(JConf.motion_read_delay) * 1000){
       motionTimer = millis();
-      motionDetect = false;
-      MotionDetect();
+      if (motionDetect){
+        motionDetect = false;
+        MqttPubMotionState(motionDetect);
+      }
     }
   }
 
-  String AUTO;   AUTO += FPSTR(AUTOP);
-  if (lightState == AUTO){
+  if (lightTypeVal == AUTO || light2TypeVal == AUTO){
     LightControl();
   }
 
@@ -3394,25 +3469,21 @@ void loop() {
 
   if (WiFi.status() == WL_CONNECTED) {
 
-    if (atoi(JConf.mqtt_enable) == 1) {
+    if (atoi(JConf.mqtt_enable) == ON) {
 
       if (!mqttClient.connected()) {
-        if (JConf.mqtt_user != "" && JConf.mqtt_pwd != ""){
-          mqttClient.connect(JConf.mqtt_name, JConf.mqtt_user, JConf.mqtt_pwd);
-        } else {
-          mqttClient.connect(JConf.mqtt_name);
-        }
+        MqttReconnect();
       } else {
         mqttClient.loop();
+
         if (millis() - subscribeTimer >= atoi(JConf.subscribe_delay) * 1000) {
           subscribeTimer = millis();
           MqttSubscribe();
         }
-      }
-
-      if (millis() - publishTimer >= atoi(JConf.publish_delay) * 1000){
-        publishTimer = millis();
-        MqttPubData();
+        if (millis() - publishTimer >= atoi(JConf.publish_delay) * 1000){
+          publishTimer = millis();
+          MqttPubData();
+        }
       }
     }
   }
@@ -3420,6 +3491,7 @@ void loop() {
   #ifdef UART_ON
   Uart.serialEvent();
   #endif
+
 
   FadeSwitchLoop();
 

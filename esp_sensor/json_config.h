@@ -33,6 +33,10 @@
 #define UP true 
 #define DOWN false
 
+#define OFF   0
+#define ON    1
+#define AUTO  2
+
 enum WIFI_MODE_ENUM {AP, STA, AP_STA};
 enum WIFI_PHY_MODE_ENUM {B, G, N};
 enum WIFI_AUTH_ENUM {OPEN, WPA_PSK, WPA2_PSK, WPA_WPA2_PSK};
@@ -61,12 +65,13 @@ class JsonConf
     char my_time_zone                 [4]  = "+6"                 ;
     char mqtt_server                  [32] = "192.168.2.205"      ;
     char mqtt_port                    [6]  = "1883"               ;
-    char mqtt_user                    [32] = "none"               ;
-    char mqtt_pwd                     [32] = "none"               ;
+    char mqtt_user                    [32] = ""                   ;
+    char mqtt_pwd                     [32] = ""                   ;
     char mqtt_name                    [32] = "_BedM"              ;
     char publish_topic                [32] = "/stateSub/"         ;
     char subscribe_topic              [32] = "/statePub/"         ;
     char command_pub_topic            [32] = "/commandPub/"       ;
+    char command_sub_topic            [32] = "/commandSub/"       ;
     char light_pin                    [3]  = "13"                 ;
     char lightoff_delay               [32] = "5"                  ;
     char lighton_lux                  [6]  = "10"                 ; // Значение в люксах, ниже которого будет включаться нагрузка
