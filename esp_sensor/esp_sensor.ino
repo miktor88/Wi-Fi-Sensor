@@ -715,7 +715,7 @@ bool MqttSubscribe(){
   sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.command_pub_topic, lightType2, JConf.mqtt_name);
   MqttSubscribePrint(topic_buff);
 
-  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.subscribe_topic, uptime, JConf.mqtt_name);
+  sprintf_P(topic_buff, (const char *)F("%s%s%s"), JConf.publish_topic, uptime, JConf.mqtt_name);
   MqttSubscribePrint(topic_buff);
 
   #ifdef DEBUG
